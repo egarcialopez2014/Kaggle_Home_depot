@@ -2,19 +2,19 @@ import numpy as np
 import pandas as pd
 import re, csv
 #plotting
-import matplotlib.pyplot as plt
-import seaborn as sns
+
 #fitting methods
 from sklearn import linear_model
 from sklearn.cross_validation import train_test_split
 from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestRegressor, BaggingRegressor
 
 import nltk
 from nltk.tokenize import WordPunctTokenizer
 from nltk.stem import WordNetLemmatizer
 
 training_data = pd.read_csv("train.csv")
-attribute_data = pd.read_csv("attributes.csv")
+at_df = pd.read_csv("attributes.csv")
 descriptions = pd.read_csv("product_descriptions.csv")
 real_test_data = pd.read_csv("test.csv")
 
@@ -24,6 +24,27 @@ id_test = real_test_data['id']
 full_data = pd.merge(sub,descriptions, on = "product_uid")
 real_full_test = pd.merge(real_test_data,descriptions, on = "product_uid")
 
+
+###
+'''
+This block takes the attributes, compresses all attributes in one line and then merges into master table 
+In case they are NaN, replaces with "NO ATTRIBUTES"
+
+'''
+def add_separator(s):
+	return str(s)+"   "
+
+at_df['new_value']=at_df['value'].apply(add_separator)
+grouped_at = at_df.groupby('product_uid')
+group_at = grouped_at[['new_value']].sum()
+group_at['product_uid']=group_at.index
+group_at.columns = ['attributes','product_uid']
+
+full_data = pd.merge(full_data,group_at,on="product_uid",how='left')
+full_data['attributes'].fillna("NO ATTRIBUTES", inplace=True)
+real_full_test = pd.merge(real_full_test,group_at,on="product_uid",how='left')
+real_full_test['attributes'].fillna("NO ATTRIBUTES", inplace=True)
+###
 
 word_punct_tokenizer = WordPunctTokenizer()
 wordnet_lemmatizer = WordNetLemmatizer()
@@ -66,7 +87,6 @@ def lemmatizer(l):
 	return new_l
 
 
-
 def digits_match(columns):
 	count=0
 	global p_number
@@ -81,10 +101,13 @@ def remove_digits(column):
 	return p_number.sub("",column)
 
 
+
 ### COMPLETING TABLES WITH FEATURES
 
 full_data['match_d_title'] = full_data[['search_term','product_title']].apply(digits_match, axis=1)
 full_data['match_d_description'] = full_data[['search_term','product_description']].apply(digits_match, axis=1)
+full_data['match_d_attribute'] = full_data[['search_term','attributes']].apply(digits_match, axis=1)
+
 full_data['count_digits'] =full_data['search_term'].apply(count_digits)
 full_data['new_search'] = full_data['search_term'].apply(remove_digits)
 full_data['count_words'] =full_data['new_search'].apply(count_words)
@@ -98,12 +121,15 @@ full_data['tokenized_description'] = full_data['tokenized_description'].apply(le
 print "COUNTING MATCHING WORDS IN DESCRIPTION AND TITLE"
 full_data['match_w_description'] = full_data[['tokenized_search','tokenized_description']].apply(word_match_list, axis = 1)
 full_data['match_w_title'] = full_data[['tokenized_search','product_title']].apply(word_match_sentence, axis = 1)
+full_data['match_w_attribute'] = full_data[['tokenized_search','attributes']].apply(word_match_sentence, axis = 1)
 
 ################
 ################
 
 real_full_test['match_d_title'] = real_full_test[['search_term','product_title']].apply(digits_match, axis=1)
 real_full_test['match_d_description'] = real_full_test[['search_term','product_description']].apply(digits_match, axis=1)
+real_full_test['match_d_attribute'] = real_full_test[['search_term','attributes']].apply(digits_match, axis=1)
+
 real_full_test['count_digits'] =real_full_test['search_term'].apply(count_digits)
 real_full_test['new_search'] = real_full_test['search_term'].apply(remove_digits)
 real_full_test['count_words'] =real_full_test['new_search'].apply(count_words)
@@ -117,14 +143,14 @@ real_full_test['tokenized_description'] = real_full_test['tokenized_description'
 print "COUNTING MATCHING WORDS IN DESCRIPTION AND TITLE"
 real_full_test['match_w_description'] = real_full_test[['tokenized_search','tokenized_description']].apply(word_match_list, axis = 1)
 real_full_test['match_w_title'] = real_full_test[['tokenized_search','product_title']].apply(word_match_sentence, axis = 1)
-
+real_full_test['match_w_attribute'] = real_full_test[['tokenized_search','attributes']].apply(word_match_sentence, axis = 1)
 
 
 ################
 # Model fitting
 ################
 
-def model_fit():
+def model_fit_linear():
 
 	def in_limits(x):
 		if x<1: return 1
@@ -132,7 +158,7 @@ def model_fit():
 		return x
 
 	print "STARTING MODEL"
-	X = full_data[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description']].values
+	X = full_data[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description','match_d_attribute','match_w_attribute']].values
 	y = full_data['relevance'].values
 	X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
 	
@@ -145,8 +171,38 @@ def model_fit():
 	print "RMSE: ",RMSE
 
 	# for the submission
-	real_X_test = real_full_test[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description']].values
+	real_X_test = real_full_test[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description','match_d_attribute','match_w_attribute']].values
 	test_pred = regr.predict(real_X_test)
+	test_pred = in_limits(test_pred)
+
+	return test_pred
+
+
+def model_fit_rf_bagging():
+
+	def in_limits(x):
+		if x<1: return 1
+		if x>3: return 3
+		return x
+
+	print "STARTING MODEL"
+	X = full_data[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description','match_d_attribute','match_w_attribute']].values
+	y = full_data['relevance'].values
+	X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+	
+	rf = RandomForestRegressor(n_estimators=15, max_depth=6, random_state=0)
+	clf = BaggingRegressor(rf, n_estimators=45, max_samples=0.1, random_state=25)
+	clf.fit(X_train, y_train)
+	y_pred = clf.predict(X_test)
+
+	in_limits = np.vectorize(in_limits,otypes=[np.float])
+	y_pred = in_limits(y_pred)
+	RMSE = mean_squared_error(y_test, y_pred)**0.5
+	print "RMSE: ",RMSE
+
+	# for the submission
+	real_X_test = real_full_test[['count_words','count_digits','match_d_title','match_d_description','match_w_title','match_w_description','match_d_attribute','match_w_attribute']].values
+	test_pred = clf.predict(real_X_test)
 	test_pred = in_limits(test_pred)
 
 	return test_pred
@@ -155,7 +211,8 @@ def model_fit():
 ################################
 
 print "CREATING SUBMISSION FILE"
-test_pred = model_fit()
+#test_pred = model_fit_linear()
+test_pred = model_fit_rf_bagging()
 pd.DataFrame({"id": id_test, "relevance": test_pred}).to_csv('submission.csv',index=False)
 
 
